@@ -46,11 +46,13 @@ def _():
 
 @app.cell
 def _(set_seed):
-    set_seed(0xFACED)
+    SEED = 0xFACED
+
+    set_seed(SEED)
 
 
     OPTUNA_SEARCH = True
-    return (OPTUNA_SEARCH,)
+    return OPTUNA_SEARCH, SEED
 
 
 @app.cell
@@ -181,6 +183,7 @@ def _(
     f1_score,
     models_lin,
     np,
+    params_lin,
     pl,
     tqdm,
     y_train,
@@ -247,10 +250,11 @@ def _(
         return result
 
 
-    def start_fits(models, cv, X_train, y_train, X_val, y_val):
+    def start_fits(models, params, cv, X_train, y_train, X_val, y_val):
         results = []
 
         for model_name, model in models.items():
+            model.set_params(**params[model_name])
             result = fit_single_model(
                 model_name,
                 model,
@@ -271,8 +275,9 @@ def _(
         return pl.DataFrame(results)
 
 
-    results = start_fits(
+    results_lin = start_fits(
         models_lin,
+        params_lin,
         cv,
         X_train,
         y_train,
@@ -280,26 +285,26 @@ def _(
         y_val
     )
 
-    results
-    return (scorer_accuracy,)
+    results_lin
+    return scorer_accuracy, start_fits
 
 
 @app.cell
 def _(
     OPTUNA_SEARCH,
+    SEED,
     X_train,
     cv,
     make_scorer,
     models_lin,
     optuna,
     param_distributions,
-    params_lin,
     scorer_accuracy,
     y_train,
 ):
     if OPTUNA_SEARCH:
         searches = {}
-
+        optuna_params = {name: {} for name in models_lin}
         for name, model in models_lin.items():
             search = optuna.integration.OptunaSearchCV(
                 estimator=model,
@@ -308,20 +313,39 @@ def _(
                 verbose=0,
                 scoring=make_scorer(scorer_accuracy),
                 n_trials=100 if param_distributions[name] else 1,
+                random_state=SEED
             )
-        
+    
             search.fit(X_train, y_train)
 
 
-            searches['name'] = search
+            searches[name] = search
 
             for param_name, param_value in search.best_params_.items():
-                params_lin[name][param_name] = param_value
+                optuna_params[name][param_name] = param_value
 
-            print(name)
-            print("score:", search.best_score_)
-            print("params:", search.best_params_)
-            print()
+    return (optuna_params,)
+
+
+@app.cell
+def _(
+    X_train,
+    X_val,
+    cv,
+    models_lin,
+    optuna_params,
+    start_fits,
+    y_train,
+    y_val,
+):
+    optuna_results_lin = start_fits(
+        models_lin,
+        optuna_params,
+        cv,
+        X_train, y_train, X_val, y_val
+    )
+
+    optuna_results_lin
     return
 
 
