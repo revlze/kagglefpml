@@ -335,7 +335,7 @@ def _(
 
 
 @app.cell
-def _(SEED, optuna):
+def _(SEED, optuna, start_fits):
     def start_optuna(models, param_distributions, cv, scoring, X_train, y_train, random_state=SEED, n_trials=100, n_jobs=-1):
         searches = {}
         optuna_params = {name: {} for name in models}
@@ -363,7 +363,28 @@ def _(SEED, optuna):
         return optuna_params
 
 
-    return (start_optuna,)
+    def fit_optuna(models, param_distributions, cv, scoring, X_train, y_train, X_val, y_val, random_state=SEED, n_trials=100, n_jobs=-1):
+        params = start_optuna(
+            models,
+            param_distributions,
+            cv,
+            scoring,
+            X_train, y_train,
+            random_state,
+            n_trials,
+            n_jobs
+        )
+        results = start_fits(
+            models,
+            params,
+            cv,
+            X_train, y_train,
+            X_val, y_val
+        )
+
+        return results, params
+
+    return (fit_optuna,)
 
 
 @app.cell
@@ -372,25 +393,18 @@ def _(
     X_train,
     X_val,
     cv,
+    fit_optuna,
     make_scorer,
     models_lin,
     param_distributions_lin,
     scorer_accuracy,
-    start_fits,
-    start_optuna,
     y_train,
     y_val,
 ):
     if OPTUNA_SEARCH:
-        optuna_params_lin = start_optuna(
+        optuna_results_lin,optuna_params_lin = fit_optuna(
             models_lin, param_distributions_lin, cv, make_scorer(scorer_accuracy),
-            X_train, y_train
-        )
-        optuna_results_lin = start_fits(
-        models_lin,
-        optuna_params_lin,
-        cv,
-        X_train, y_train, X_val, y_val
+            X_train, y_train, X_val, y_val
     )
 
     optuna_results_lin
@@ -435,22 +449,17 @@ def _(
     X_train,
     X_val,
     cv,
+    fit_optuna,
     make_scorer,
     models_knn,
     param_distributions_knn,
     scorer_accuracy,
-    start_fits,
-    start_optuna,
     y_train,
     y_val,
 ):
     if OPTUNA_SEARCH:
-        optuna_params_knn = start_optuna(
+        optuna_results_knn, optuna_params_knn = fit_optuna(
             models_knn, param_distributions_knn, cv, make_scorer(scorer_accuracy),
-            X_train, y_train
-        )
-        optuna_results_knn = start_fits(
-            models_knn, optuna_params_knn, cv,
             X_train, y_train, X_val, y_val)
 
     optuna_results_knn
@@ -497,26 +506,21 @@ def _(
     X_train,
     X_val,
     cv,
+    fit_optuna,
     make_scorer,
     model_tree,
     param_distributions_tree,
     scorer_accuracy,
-    start_fits,
-    start_optuna,
     y_train,
     y_val,
 ):
     if OPTUNA_SEARCH:
-        optuna_params_tree = start_optuna(
+        optuna_results_tree, optuna_params_tree = fit_optuna(
             model_tree,
             param_distributions_tree,
             cv,
             make_scorer(scorer_accuracy),
-            X_train, y_train
-        )
-        optuna_results_tree = start_fits(
-            model_tree, optuna_params_tree,
-            cv, X_train, y_train, X_val, y_val
+            X_train, y_train, X_val, y_val
         )
     optuna_results_tree, optuna_params_tree
     return
@@ -571,25 +575,18 @@ def _(
     X_train,
     X_val,
     cv,
+    fit_optuna,
     make_scorer,
     model_rf,
     param_distributions_rf,
     scorer_accuracy,
-    start_fits,
-    start_optuna,
     y_train,
     y_val,
 ):
     if OPTUNA_SEARCH:
-        optuna_params_rf = start_optuna(
+        optuna_results_rf, optuna_params_rf = fit_optuna(
             model_rf, param_distributions_rf,
             cv, make_scorer(scorer_accuracy),
-            X_train, y_train
-        )
-        optuna_results_rf = start_fits(
-            model_rf,
-            optuna_params_rf,
-            cv,
             X_train, y_train, X_val, y_val
         )
     optuna_results_rf, optuna_params_rf
@@ -660,27 +657,18 @@ def _(
     X_train,
     X_val,
     cv,
+    fit_optuna,
     make_scorer,
     model_gb,
     param_distributions_gb,
     scorer_accuracy,
-    start_fits,
-    start_optuna,
     y_train,
     y_val,
 ):
-    if OPTUNA_SEARCH:
-        optuna_params_gb = start_optuna(
-            model_gb, param_distributions_gb,
-            cv, make_scorer(scorer_accuracy),
-            X_train, y_train
-        )
-        optuna_results_gb = start_fits(
-            model_gb,
-            optuna_params_gb,
-            cv,
-            X_train, y_train, X_val, y_val
-        )
+    if OPTUNA_SEARCH: 
+        optuna_results_gb, optuna_params_gb = fit_optuna(model_gb, param_distributions_gb, cv, make_scorer(scorer_accuracy),
+            X_train, y_train, X_val, y_val)
+
     optuna_results_gb, optuna_params_gb
     return
 
