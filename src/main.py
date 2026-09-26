@@ -9,6 +9,9 @@ def _():
     import os
     import random
 
+    # Обход падения OpenMP на macOS; задаём до импорта ML-библиотек.
+    os.environ["OMP_NUM_THREADS"] = "1"
+
     import torch
     import optuna
     import numpy as np
@@ -19,6 +22,17 @@ def _():
     from sklearn.model_selection import StratifiedKFold, train_test_split
     from sklearn.linear_model import LinearRegression, Lasso, Ridge, ElasticNet
     from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, make_scorer
+    from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
+    from sklearn.base import clone
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.pipeline import Pipeline
+    from sklearn.compose import ColumnTransformer
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler, OneHotEncoder
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+
+    from lightgbm import LGBMClassifier
+    from xgboost import XGBClassifier
 
     from tqdm import tqdm
     from pathlib import Path
@@ -26,13 +40,25 @@ def _():
     from utils import set_seed
 
     return (
+        ColumnTransformer,
+        DecisionTreeClassifier,
         ElasticNet,
+        GradientBoostingClassifier,
+        KNeighborsClassifier,
+        LGBMClassifier,
         Lasso,
         LinearRegression,
+        OneHotEncoder,
         Path,
+        Pipeline,
+        RandomForestClassifier,
         Ridge,
+        SimpleImputer,
+        StandardScaler,
         StratifiedKFold,
+        XGBClassifier,
         accuracy_score,
+        clone,
         f1_score,
         make_scorer,
         np,
@@ -70,44 +96,57 @@ def _(data_path, pl):
 
 
 @app.cell
-def _(train_dataset):
-    X, y = train_dataset.drop_nulls(['Embarked']).drop(['Survived']), train_dataset.drop_nulls(['Embarked'])['Survived']
+def _(test_dataset, train_dataset):
+    # убираем ненужные фичи
+    train_set= train_dataset.drop(['PassengerId', 'Name', 'Ticket', 'Cabin'])
+    test_set = test_dataset.drop(['PassengerId', 'Name', 'Ticket', 'Cabin'])
+    return test_set, train_set
+
+
+@app.cell
+def _(train_set):
+    X, y = train_set.drop('Survived'), train_set['Survived']
     return X, y
+
+
+@app.cell
+def _(X, test_set, train_test_split, y):
+    X_train, X_val, y_train, y_val = train_test_split(X, y, train_size=0.8)
+    X_test = test_set
+    return X_train, X_val, y_train, y_val
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    Убираем ['Name', 'Ticket', 'Cabin']
+    ## preprocess
     """)
     return
 
 
 @app.cell
-def _(pl):
-    def prepare_dataset(df: pl.DataFrame):
-        # убираем ненужные фичи
-        df = df.drop(['PassengerId', 'Name', 'Ticket', 'Cabin'])
+def _(
+    ColumnTransformer,
+    OneHotEncoder,
+    Pipeline,
+    SimpleImputer,
+    StandardScaler,
+):
+    numeric = Pipeline([
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler()),
+    ])
 
-        # заполняем пропуски в age
-        df = df.fill_null(df['Age'].median())
+    categorical = Pipeline([
+        ("imputer", SimpleImputer(missing_values=None, strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+    ])
 
-        # дропаем nulls в embarked, т.к. там всего их 2 и не имеет смысла закидывать в onehot, вообще они дропаются сверху
-        df = df.drop_nulls(['Embarked'])
-
-        # переводим в onehot категориальные
-        df = df.to_dummies(['Sex', 'Embarked'])
-
-        return df
-
-    return (prepare_dataset,)
-
-
-@app.cell
-def _(X, prepare_dataset, test_dataset, train_test_split, y):
-    X_train, X_val, y_train, y_val = train_test_split(X, y, train_size=0.8)
-    X_train, X_val, X_test = map(prepare_dataset, (X_train, X_val, test_dataset))
-    return X_train, X_val, y_train, y_val
+    preprocess = ColumnTransformer([
+        ('numeric', numeric, ['Pclass', 'Age', 'SibSp', 'Parch', 'Fare']),
+        ('categorical', categorical, ['Sex', 'Embarked']),
+    ])
+    return (preprocess,)
 
 
 @app.cell(hide_code=True)
@@ -119,59 +158,63 @@ def _(mo):
 
 
 @app.cell
-def _(ElasticNet, Lasso, LinearRegression, Ridge, StratifiedKFold, optuna):
-    params_lin = {
-        'LinearRegression': {},
-        'Lasso': {
-            'alpha': 1,
-        },
-        'Ridge': {
-            'alpha': 100.0,
-        },
-        'ElasticNet': {
-            'alpha': 1.0,
-            'l1_ratio': 0.8,
-        },
-        'StratifiedKFold': {
-            'n_splits': 5,
-        }
-    }
-
-    param_distributions = {
+def _(
+    ElasticNet,
+    Lasso,
+    LinearRegression,
+    Pipeline,
+    Ridge,
+    StratifiedKFold,
+    optuna,
+    preprocess,
+):
+    param_distributions_lin = {
         "LinearRegression": {},
 
         "Lasso": {
-            "alpha": optuna.distributions.FloatDistribution(
+            "model__alpha": optuna.distributions.FloatDistribution(
                 1e-4, 200, log=True
             ),
         },
 
         "Ridge": {
-            "alpha": optuna.distributions.FloatDistribution(
+            "model__alpha": optuna.distributions.FloatDistribution(
                 1e-4, 200, log=True
             ),
         },
 
         "ElasticNet": {
-            "alpha": optuna.distributions.FloatDistribution(
+            "model__alpha": optuna.distributions.FloatDistribution(
                 1e-4, 200, log=True
             ),
-            "l1_ratio": optuna.distributions.FloatDistribution(
+            "model__l1_ratio": optuna.distributions.FloatDistribution(
                 0.0, 1.0
             ),
         },
     }
 
     models_lin = {
-        'LinearRegression': LinearRegression(),
-        'Lasso': Lasso(),
-        'Ridge': Ridge(),
-        'ElasticNet': ElasticNet()
+        'LinearRegression': Pipeline([
+            ('preprocess', preprocess),
+            ('model', LinearRegression()),
+        ]),
+        'Lasso': Pipeline([
+            ('preprocess', preprocess),
+            ('model', Lasso()),
+        ]),
+        'Ridge': Pipeline([
+            ('preprocess', preprocess),
+            ('model', Ridge()),
+        ]),
+        'ElasticNet': Pipeline([
+            ('preprocess', preprocess),
+            ('model', ElasticNet()),
+        ])
     }
 
 
-    cv = StratifiedKFold(**params_lin['StratifiedKFold'])
-    return cv, models_lin, param_distributions, params_lin
+    cv = StratifiedKFold(n_splits=5)
+    return cv, models_lin, param_distributions_lin
 
 
 @app.cell
@@ -179,11 +222,11 @@ def _(
     X_train,
     X_val,
     accuracy_score,
+    clone,
     cv,
     f1_score,
     models_lin,
     np,
-    params_lin,
     pl,
     tqdm,
     y_train,
@@ -254,7 +297,9 @@ def _(
         results = []
 
         for model_name, model in models.items():
-            model.set_params(**params[model_name])
+            model = clone(model)
+            if params is not None:
+                model.set_params(**params[model_name])
             result = fit_single_model(
                 model_name,
                 model,
@@ -277,7 +322,7 @@ def _(
 
     results_lin = start_fits(
         models_lin,
-        params_lin,
+        None,
         cv,
         X_train,
         y_train,
@@ -290,62 +335,358 @@ def _(
 
 
 @app.cell
-def _(
-    OPTUNA_SEARCH,
-    SEED,
-    X_train,
-    cv,
-    make_scorer,
-    models_lin,
-    optuna,
-    param_distributions,
-    scorer_accuracy,
-    y_train,
-):
-    if OPTUNA_SEARCH:
+def _(SEED, optuna):
+    def start_optuna(models, param_distributions, cv, scoring, X_train, y_train, random_state=SEED, n_trials=100, n_jobs=-1):
         searches = {}
-        optuna_params = {name: {} for name in models_lin}
-        for name, model in models_lin.items():
+        optuna_params = {name: {} for name in models}
+        for name, model in models.items():
+            print(f"Started Optuna for model: {name}", flush=True)
             search = optuna.integration.OptunaSearchCV(
                 estimator=model,
                 param_distributions=param_distributions[name],
                 cv=cv,
                 verbose=0,
-                scoring=make_scorer(scorer_accuracy),
-                n_trials=100 if param_distributions[name] else 1,
-                random_state=SEED
+                scoring=scoring,
+                n_trials=n_trials if param_distributions[name] else 1,
+                random_state=random_state,
+                n_jobs=n_jobs
             )
-    
-            search.fit(X_train, y_train)
 
+            search.fit(X_train, y_train)
+            print(f"Ended Optuna for model: {name}", flush=True)
 
             searches[name] = search
 
             for param_name, param_value in search.best_params_.items():
                 optuna_params[name][param_name] = param_value
 
-    return (optuna_params,)
+        return optuna_params
+
+
+    return (start_optuna,)
 
 
 @app.cell
 def _(
+    OPTUNA_SEARCH,
     X_train,
     X_val,
     cv,
+    make_scorer,
     models_lin,
-    optuna_params,
+    param_distributions_lin,
+    scorer_accuracy,
     start_fits,
+    start_optuna,
     y_train,
     y_val,
 ):
-    optuna_results_lin = start_fits(
+    if OPTUNA_SEARCH:
+        optuna_params_lin = start_optuna(
+            models_lin, param_distributions_lin, cv, make_scorer(scorer_accuracy),
+            X_train, y_train
+        )
+        optuna_results_lin = start_fits(
         models_lin,
-        optuna_params,
+        optuna_params_lin,
         cv,
         X_train, y_train, X_val, y_val
     )
 
     optuna_results_lin
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## KNN
+    """)
+    return
+
+
+@app.cell
+def _(KNeighborsClassifier, Pipeline, optuna, preprocess):
+    models_knn = {
+        'KNeighborsClassifier': Pipeline([
+            ('preprocess', preprocess),
+            ('model', KNeighborsClassifier()),
+        ]),
+    }
+    # n_neighbors, weight, metric
+    param_distributions_knn = {
+        'KNeighborsClassifier': {
+            'model__n_neighbors': optuna.distributions.IntDistribution(1, 100),
+            'model__weights': optuna.distributions.CategoricalDistribution(['uniform', 'distance']),
+            'model__metric': optuna.distributions.CategoricalDistribution(
+                [
+                    'cityblock', 'cosine', 'euclidean', 'l1', 'l2',
+                    'manhattan', 'nan_euclidean', 'minkowski'
+                ]
+            )
+        },
+    }
+    return models_knn, param_distributions_knn
+
+
+@app.cell
+def _(
+    OPTUNA_SEARCH,
+    X_train,
+    X_val,
+    cv,
+    make_scorer,
+    models_knn,
+    param_distributions_knn,
+    scorer_accuracy,
+    start_fits,
+    start_optuna,
+    y_train,
+    y_val,
+):
+    if OPTUNA_SEARCH:
+        optuna_params_knn = start_optuna(
+            models_knn, param_distributions_knn, cv, make_scorer(scorer_accuracy),
+            X_train, y_train
+        )
+        optuna_results_knn = start_fits(
+            models_knn, optuna_params_knn, cv,
+            X_train, y_train, X_val, y_val)
+
+    optuna_results_knn
+    return
+
+
+@app.cell
+def _(X_train, X_val, cv, models_knn, start_fits, y_train, y_val):
+    default_result_knn = start_fits(models_knn, None, cv, X_train, y_train, X_val, y_val)
+    default_result_knn
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## DecisionTreeClassifier
+    """)
+    return
+
+
+@app.cell
+def _(DecisionTreeClassifier, Pipeline, optuna, preprocess):
+    model_tree = {
+        'DecisionTreeClassifier': Pipeline([
+            ('preprocess', preprocess),
+            ('model', DecisionTreeClassifier()),
+        ])
+    }
+
+    param_distributions_tree = {
+        'DecisionTreeClassifier': {
+            'model__criterion': optuna.distributions.CategoricalDistribution(['gini', 'entropy', 'log_loss']),
+            'model__min_samples_split': optuna.distributions.IntDistribution(2, 10),
+            'model__min_samples_leaf': optuna.distributions.IntDistribution(1, 10)
+        }
+    }
+    return model_tree, param_distributions_tree
+
+
+@app.cell
+def _(
+    OPTUNA_SEARCH,
+    X_train,
+    X_val,
+    cv,
+    make_scorer,
+    model_tree,
+    param_distributions_tree,
+    scorer_accuracy,
+    start_fits,
+    start_optuna,
+    y_train,
+    y_val,
+):
+    if OPTUNA_SEARCH:
+        optuna_params_tree = start_optuna(
+            model_tree,
+            param_distributions_tree,
+            cv,
+            make_scorer(scorer_accuracy),
+            X_train, y_train
+        )
+        optuna_results_tree = start_fits(
+            model_tree, optuna_params_tree,
+            cv, X_train, y_train, X_val, y_val
+        )
+    optuna_results_tree, optuna_params_tree
+    return
+
+
+@app.cell
+def _(X_train, X_val, cv, model_tree, start_fits, y_train, y_val):
+    start_fits(model_tree, None, cv,
+                X_train, y_train, X_val, y_val)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    видно, что обычное дерево переобучилось
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## RandomForest
+    """)
+    return
+
+
+@app.cell
+def _(Pipeline, RandomForestClassifier, optuna, preprocess):
+    model_rf = {
+        'RandomForestClassifier': Pipeline([
+            ('preprocess', preprocess),
+            ('model', RandomForestClassifier(n_jobs=-1))
+        ])
+    }
+
+    param_distributions_rf = {
+        'RandomForestClassifier': {
+            'model__n_estimators': optuna.distributions.IntDistribution(10, 200),
+            'model__max_depth': optuna.distributions.IntDistribution(2, 60),
+            'model__min_samples_split': optuna.distributions.IntDistribution(2, 20),
+            'model__min_samples_leaf': optuna.distributions.IntDistribution(1, 10),
+        }
+    }
+    return model_rf, param_distributions_rf
+
+
+@app.cell
+def _(
+    OPTUNA_SEARCH,
+    X_train,
+    X_val,
+    cv,
+    make_scorer,
+    model_rf,
+    param_distributions_rf,
+    scorer_accuracy,
+    start_fits,
+    start_optuna,
+    y_train,
+    y_val,
+):
+    if OPTUNA_SEARCH:
+        optuna_params_rf = start_optuna(
+            model_rf, param_distributions_rf,
+            cv, make_scorer(scorer_accuracy),
+            X_train, y_train
+        )
+        optuna_results_rf = start_fits(
+            model_rf,
+            optuna_params_rf,
+            cv,
+            X_train, y_train, X_val, y_val
+        )
+    optuna_results_rf, optuna_params_rf
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Boostings
+    """)
+    return
+
+
+@app.cell
+def _(
+    GradientBoostingClassifier,
+    LGBMClassifier,
+    Pipeline,
+    XGBClassifier,
+    optuna,
+    preprocess,
+):
+    model_gb = {
+        'GradientBoostingClassifier': Pipeline([
+            ('preprocess', preprocess),
+            ('model', GradientBoostingClassifier()),
+        ]),
+        'LGBMClassifier': Pipeline([
+            ('preprocess', preprocess),
+            ('model', LGBMClassifier(n_jobs=1, verbosity=-1)),
+        ]),
+        'XGBClassifier': Pipeline([
+            ('preprocess', preprocess),
+            ('model', XGBClassifier(n_jobs=1)),
+        ]),
+    }
+
+    param_distributions_gb = {
+        'GradientBoostingClassifier': {
+            'model__loss': optuna.distributions.CategoricalDistribution(['log_loss', 'exponential']),
+            'model__learning_rate': optuna.distributions.FloatDistribution(1e-4, 1e-1),
+            'model__n_estimators': optuna.distributions.IntDistribution(10, 200),
+            'model__min_samples_split': optuna.distributions.IntDistribution(2, 50),
+            'model__min_samples_leaf': optuna.distributions.IntDistribution(1, 50),
+            'model__max_depth': optuna.distributions.IntDistribution(1, 10)
+        },
+        'LGBMClassifier': {
+            'model__num_leaves': optuna.distributions.IntDistribution(3, 100),
+            'model__max_depth': optuna.distributions.IntDistribution(1, 20),
+            'model__learning_rate': optuna.distributions.FloatDistribution(1e-4, 1e-1),
+            'model__n_estimators': optuna.distributions.IntDistribution(100, 1000),
+            'model__reg_alpha': optuna.distributions.FloatDistribution(1e-3, 1),
+            'model__reg_lambda': optuna.distributions.FloatDistribution(1e-3, 1),
+        },
+        'XGBClassifier': {
+            'model__eta': optuna.distributions.FloatDistribution(1e-4, 1),
+            'model__gamma': optuna.distributions.IntDistribution(0, 100),
+            'model__max_depth': optuna.distributions.IntDistribution(1, 32),
+        }
+    }
+    return model_gb, param_distributions_gb
+
+
+@app.cell
+def _(
+    OPTUNA_SEARCH,
+    X_train,
+    X_val,
+    cv,
+    make_scorer,
+    model_gb,
+    param_distributions_gb,
+    scorer_accuracy,
+    start_fits,
+    start_optuna,
+    y_train,
+    y_val,
+):
+    if OPTUNA_SEARCH:
+        optuna_params_gb = start_optuna(
+            model_gb, param_distributions_gb,
+            cv, make_scorer(scorer_accuracy),
+            X_train, y_train
+        )
+        optuna_results_gb = start_fits(
+            model_gb,
+            optuna_params_gb,
+            cv,
+            X_train, y_train, X_val, y_val
+        )
+    optuna_results_gb, optuna_params_gb
+    return
+
+
+@app.cell
+def _():
     return
 
 
